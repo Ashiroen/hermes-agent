@@ -280,10 +280,18 @@ RUN cd web && npm run build && \
 # --link decouples this layer from parents for cache purposes; --chmod bakes
 # the final read-only permissions at copy time so we skip the separate
 # `chmod -R` pass that previously walked ~30k files across the venv +
-# node_modules + source (21s amd64 / 222s arm64 — #49113).  `a+rX,go-w`
-# gives the non-root hermes user read + traverse but no write; root retains
-# write so the build steps below don't need chmod u+w dances.
-COPY --link --chmod=a+rX,go-w . .
+# node_modules + source (21s amd64 / 222s arm64 — #49113).
+#
+# Octal 0755, not symbolic `a+rX,go-w`: older Dockerfile frontends
+# (Coolify helper 1.0.x / Docker 27 BuildKit) reject symbolic mode with
+# "invalid chmod parameter: 'a+rX,go-w'. it should be octal string and
+# between 0 and 07777".  0755 is the octal equivalent of the intent:
+# owner (root) retains write so later RUN steps don't need chmod u+w
+# dances; group/other (the non-root hermes user) get read+traverse, no
+# write.  Octal applies the same bits to files and directories, so
+# regular files become executable — the cost of staying compatible with
+# those builders.
+COPY --link --chmod=0755 . .
 
 # ---------- Permissions ----------
 # Link hermes-agent itself (editable). Deps are already installed in the
@@ -293,7 +301,7 @@ RUN uv pip install --no-cache-dir --no-deps -e "."
 
 # Wire the exec shim and install-method stamp.  Files under /opt/hermes are
 # already root-owned (COPY, uv sync, npm install all run as root) and
-# read-only for the hermes user (go-w from the --chmod above).
+# read-only for the hermes user (0755 from the --chmod above: no group/other write).
 
 USER root
 RUN mkdir -p /opt/hermes/bin && \
