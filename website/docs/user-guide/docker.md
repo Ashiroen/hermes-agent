@@ -159,7 +159,7 @@ If no provider is registered and the bind is non-loopback, the dashboard **fails
 An unauthenticated public dashboard was the entry point for the June 2026 MCP-config persistence campaign: internet scanners reached exposed dashboards (and OpenAI API servers) and drove the agent into planting an SSH-key backdoor. The auth gate is now mandatory on every non-loopback bind. For a trusted-LAN / homelab box, the bundled username/password provider (`HERMES_DASHBOARD_BASIC_AUTH_USERNAME` + `_PASSWORD`) is the zero-infra way to satisfy it.
 :::
 
-Running the dashboard as a separate container **is** supported when that container shares the host PID and network namespace (e.g. `network_mode: host`, as the repo's own `docker-compose.yml` does — see its `dashboard` service). Its gateway-liveness detection requires a shared PID namespace with the gateway process, so the limitation only applies to dashboards run in isolated bridge-network containers without a shared PID namespace.
+The official `docker-compose.yml` runs the dashboard as a supervised side-process in the **same** `gateway` container (`HERMES_DASHBOARD=1`) on a bridge network, so reverse proxies such as Coolify / Traefik can reach port 9119. A separate dashboard container is only supported when it shares the host PID and network namespace with the gateway (`network_mode: host`); gateway-liveness detection needs that shared PID namespace, so an isolated bridge-network dashboard sidecar will not work.
 
 ## Running interactively (CLI chat)
 
@@ -380,6 +380,24 @@ services:
 ```
 
 Start with `docker compose up -d` and view logs with `docker compose logs -f`. The supervised gateway's stdout is also tee'd to `${HERMES_HOME}/logs/gateways/<profile>/current` on the volume — see [Where the logs go](#where-the-logs-go) for the full routing map.
+
+### Coolify / Traefik
+
+Use the repo `docker-compose.yml` as-is: bridge networking, `expose`/`ports` for 9119, and the IPv4-only default network. Do **not** switch the service back to `network_mode: host` — that takes the container off Coolify's proxy network and Traefik returns HTTP 503 "no available server".
+
+If deploy fails with:
+
+```text
+ParseAddr("fde4:...::1/64"): unexpected character, want colon (at "/64")
+```
+
+Compose is reading an IPv6 Docker-network gateway stored as CIDR. That is a Docker Engine 27.x inspect bug ([moby#49520](https://github.com/moby/moby/pull/49520)), not an address in this repository. The shipped compose file disables IPv6 on the project network so a new stack does not create that gateway. If Coolify already attached an IPv6 destination network, fix the host:
+
+1. Upgrade Docker Engine to 28.0.1 or newer, **or** restart the daemon so existing networks report a bare IPv6 address (`sudo systemctl restart docker`).
+2. If it still fails, set `"ipv6": false` in `/etc/docker/daemon.json`, restart Docker, and recreate the Coolify destination network (see [coollabsio/coolify#8649](https://github.com/coollabsio/coolify/issues/8649)).
+3. Clear **Settings → General → Instance's Public IPv6** if Coolify filled it with a CIDR.
+
+Do not add `extra_hosts: ["host.docker.internal:host-gateway"]` to work around this — `host-gateway` resolution hits the same ParseAddr path.
 
 ## Optional: Linux desktop audio bridge
 
