@@ -383,7 +383,7 @@ Start with `docker compose up -d` and view logs with `docker compose logs -f`. T
 
 ### Coolify / Traefik
 
-Use the repo `docker-compose.yml` as-is: bridge networking, `expose`/`ports` for 9119, and the IPv4-only default network. Do **not** switch the service back to `network_mode: host` — that takes the container off Coolify's proxy network and Traefik returns HTTP 503 "no available server".
+Use the repo `docker-compose.yml` as-is: bridge networking and `expose`/`ports` for 9119. Do **not** add a `networks:` block — Coolify creates an isolated bridge named after the resource UUID and attaches Traefik to it; a second project network makes Traefik pick the wrong container IP. Do **not** switch the service to `network_mode: host` — that takes the container off Coolify's proxy network and Traefik returns HTTP 503 "no available server".
 
 If deploy fails with:
 
@@ -391,10 +391,21 @@ If deploy fails with:
 ParseAddr("fde4:...::1/64"): unexpected character, want colon (at "/64")
 ```
 
-Compose is reading an IPv6 Docker-network gateway stored as CIDR. That is a Docker Engine 27.x inspect bug ([moby#49520](https://github.com/moby/moby/pull/49520)), not an address in this repository. The shipped compose file disables IPv6 on the project network so a new stack does not create that gateway. If Coolify already attached an IPv6 destination network, fix the host:
+that string is the IPv6 gateway of Coolify's UUID network, not an address in this repository. Coolify runs `docker network create --attachable <uuid>` before `docker compose up`. Docker Engine 27.x then reports the new IPv6 gateway as CIDR until the daemon restarts ([moby#49520](https://github.com/moby/moby/pull/49520)). Compose inspects that network and exits. A compose-file change cannot stop Coolify from injecting the already-created network.
 
-1. Upgrade Docker Engine to 28.0.1 or newer, **or** restart the daemon so existing networks report a bare IPv6 address (`sudo systemctl restart docker`).
-2. If it still fails, set `"ipv6": false` in `/etc/docker/daemon.json`, restart Docker, and recreate the Coolify destination network (see [coollabsio/coolify#8649](https://github.com/coollabsio/coolify/issues/8649)).
+Fix it on the **Coolify host** (SSH, or **Servers → Terminal**), then redeploy:
+
+```sh
+# 1. Fastest: rewrite in-memory IPAM so the gateway is fdxx::1, not fdxx::1/64
+sudo systemctl restart docker
+```
+
+Or copy `scripts/fix_docker_ipv6_cidr_gateway.sh` to the host and run it as root.
+
+If the next *new* network (a PR preview, a new resource) fails the same way, make it permanent:
+
+1. Upgrade Docker Engine to **28.0.1 or newer** (`apt-get install docker-ce --only-upgrade`), **or**
+2. Set `"ipv6": false` in `/etc/docker/daemon.json`, restart Docker, and recreate the resource network (see [coollabsio/coolify#8649](https://github.com/coollabsio/coolify/issues/8649)).
 3. Clear **Settings → General → Instance's Public IPv6** if Coolify filled it with a CIDR.
 
 Do not add `extra_hosts: ["host.docker.internal:host-gateway"]` to work around this — `host-gateway` resolution hits the same ParseAddr path.

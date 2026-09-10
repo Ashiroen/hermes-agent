@@ -33,12 +33,17 @@
 #     and API_SERVER_HOST. See docs/user-guide/api-server.md before doing
 #     this on an internet-facing host.
 #
-# IPv6: keep the Compose project network IPv4-only. Docker Engine 27.x
-# reports a newly created IPv6 gateway as `fdxx::1/64` (CIDR) until the
-# daemon restarts (moby#49520). Compose then fails Coolify/Traefik deploys
-# with: ParseAddr("fde4:...::1/64"): unexpected character, want colon.
-# Published host ports still work on dual-stack hosts via docker-proxy.
-# Do not add extra_hosts host-gateway — that is another ParseAddr path.
+# Coolify: do not add a `networks:` block. Coolify creates an isolated
+# bridge named after the resource UUID and attaches Traefik to it. A
+# second project network makes Traefik pick the wrong container IP
+# (504 / "no available server"). Do not use network_mode: host either.
+#
+# If `docker compose up` fails with
+#   ParseAddr("fdxx::1/64"): unexpected character, want colon
+# that CIDR is Coolify's UUID network gateway, not this file. Docker
+# Engine 27.x reports a new IPv6 gateway as CIDR until the daemon
+# restarts (moby#49520). Fix it on the Coolify HOST — see
+# scripts/fix_docker_ipv6_cidr_gateway.sh and docker.md "Coolify / Traefik".
 #
 services:
   gateway:
@@ -86,12 +91,3 @@ services:
       # - GOOGLE_CHAT_SERVICE_ACCOUNT_JSON=${GOOGLE_CHAT_SERVICE_ACCOUNT_JSON}
       # - GOOGLE_CHAT_ALLOWED_USERS=${GOOGLE_CHAT_ALLOWED_USERS}
     command: ["gateway", "run"]
-    # Named (not default) so Coolify's compose parser keeps this IPv4
-    # network when it injects its destination network as extra.
-    networks:
-      - hermes
-
-networks:
-  hermes:
-    driver: bridge
-    enable_ipv6: false
