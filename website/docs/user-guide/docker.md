@@ -159,7 +159,7 @@ If no provider is registered and the bind is non-loopback, the dashboard **fails
 An unauthenticated public dashboard was the entry point for the June 2026 MCP-config persistence campaign: internet scanners reached exposed dashboards (and OpenAI API servers) and drove the agent into planting an SSH-key backdoor. The auth gate is now mandatory on every non-loopback bind. For a trusted-LAN / homelab box, the bundled username/password provider (`HERMES_DASHBOARD_BASIC_AUTH_USERNAME` + `_PASSWORD`) is the zero-infra way to satisfy it.
 :::
 
-Running the dashboard as a separate container **is** supported when that container shares the host PID and network namespace (e.g. `network_mode: host`, as the repo's own `docker-compose.yml` does — see its `dashboard` service). Its gateway-liveness detection requires a shared PID namespace with the gateway process, so the limitation only applies to dashboards run in isolated bridge-network containers without a shared PID namespace.
+The official `docker-compose.yml` runs the dashboard as a supervised side-process in the **same** `gateway` container (`HERMES_DASHBOARD=1`). On Coolify hosts still on Docker Engine 27.x it uses `network_mode: host` and binds `0.0.0.0:9119` so Traefik can reach the host port without Compose inspecting Coolify's IPv6 UUID network. A separate dashboard container is only supported when it shares the host PID and network namespace with the gateway.
 
 ## Running interactively (CLI chat)
 
@@ -380,6 +380,28 @@ services:
 ```
 
 Start with `docker compose up -d` and view logs with `docker compose logs -f`. The supervised gateway's stdout is also tee'd to `${HERMES_HOME}/logs/gateways/<profile>/current` on the volume — see [Where the logs go](#where-the-logs-go) for the full routing map.
+
+### Coolify / Traefik
+
+This repo's `docker-compose.yml` uses **`network_mode: host`** (and **no** `ports:` / `networks:` keys) and binds the dashboard to **`0.0.0.0:9119`**.
+
+- `ports:` together with host mode is invalid Compose. Coolify's generator then drops host mode, injects the UUID network, and `docker compose up` dies with `ParseAddr("fdxx::1/64")`.
+- Host mode without `ports:` is the skip path: Coolify does not inject that network.
+- The earlier HTTP 503 was host mode **plus** a `127.0.0.1` dashboard bind. Traefik reaches the Docker host IP; `0.0.0.0:9119` is listening.
+
+Set the Coolify domain to **`https://3.ai.vazler.cz:9119`** (the `:9119` is the backend port Traefik should use; it is not the public HTTPS port).
+
+If ParseAddr still appears, Coolify is inspecting an already-created IPv6 network. In the application: **Configuration → General → Custom Start Command**:
+
+```sh
+bash scripts/coolify-compose-up.sh
+```
+
+That rewrites CIDR IPv6 gateways to IPv4-only over the Docker HTTP API (curl, not the Go client), then runs `docker compose up -d`. Enable **Raw Compose Deployment** as well so Coolify does not re-add the UUID network.
+
+On Docker Engine **28.0.1+** you can switch back to bridge + `expose`/`ports` 9119. To stop CIDR gateways on 27.x, upgrade Docker or set `"ipv6": false` in `/etc/docker/daemon.json` ([coolify#8649](https://github.com/coollabsio/coolify/issues/8649)).
+
+Do not add `extra_hosts: ["host.docker.internal:host-gateway"]`.
 
 ## Optional: Linux desktop audio bridge
 

@@ -10,14 +10,19 @@
 # values via usermod/groupmod; each supervised service then drops to that
 # user via `s6-setuidgid`.
 #
-# Reverse proxies (Coolify / Traefik / Caddy): do NOT use host networking.
-# Host mode takes the container off the proxy Docker network, which surfaces
-# as HTTP 503 "no available server". Coolify should expose port 9119 and
-# attach the FQDN to this `gateway` service. A non-loopback dashboard bind
-# requires an auth provider or the dashboard fails closed at startup — set
-# HERMES_DASHBOARD_BASIC_AUTH_USERNAME + _PASSWORD + _SECRET (or Nous OAuth)
-# in the platform env, and HERMES_DASHBOARD_PUBLIC_URL to the public HTTPS
-# origin (e.g. https://ai.vazler.cz).
+# Coolify + Docker Engine 27.x ParseAddr("fdxx::1/64"):
+# 1. This service uses network_mode: host (no `ports:` / `networks:`)
+#    so Coolify does not inject its UUID network into compose.
+#    `ports:` + host made Coolify drop host mode and re-inject that
+#    network, which is why ParseAddr survived the previous revision.
+# 2. Bind the dashboard at 0.0.0.0:9119 (not 127.0.0.1) so Traefik can
+#    reach the Docker host IP. Loopback bind was HTTP 503.
+# 3. If ParseAddr still happens, Coolify is inspecting an already-created
+#    IPv6 UUID network. In Coolify set Custom Start Command to:
+#      bash scripts/coolify-compose-up.sh
+#    That recreates CIDR-gateway networks as IPv4-only via the Docker
+#    HTTP API (curl), then compose up. Domain must include the port:
+#      https://3.ai.vazler.cz:9119
 #
 # Security notes:
 #   - The dashboard stores API keys. A public bind always requires auth;
@@ -38,18 +43,17 @@ services:
     build: .
     image: hermes-agent
     restart: unless-stopped
-    expose:
-      - "9119"
-    ports:
-      - "9119:9119"
+    network_mode: host
+    labels:
+      - traefik.http.services.gateway.loadbalancer.server.port=9119
     volumes:
       - ${HERMES_DATA:-~/.hermes}:/opt/data
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}
       # Supervised dashboard in this same container (official image path).
-      # A separate dashboard container needs host/PID namespace sharing;
-      # that is incompatible with Coolify's reverse proxy.
+      # 0.0.0.0 is required with host networking so Traefik can reach
+      # the Docker host IP:9119 (127.0.0.1 produced HTTP 503).
       - HERMES_DASHBOARD=1
       - HERMES_DASHBOARD_HOST=0.0.0.0
       - HERMES_DASHBOARD_PORT=9119
