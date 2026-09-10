@@ -383,23 +383,25 @@ Start with `docker compose up -d` and view logs with `docker compose logs -f`. T
 
 ### Coolify / Traefik
 
-This repo's `docker-compose.yml` uses **`network_mode: host`** and binds the dashboard to **`0.0.0.0:9119`**. That is required on Docker Engine 27.x Coolify hosts:
+This repo's `docker-compose.yml` uses **`network_mode: host`** (and **no** `ports:` / `networks:` keys) and binds the dashboard to **`0.0.0.0:9119`**.
 
-- Coolify always runs `docker network create --attachable <uuid>` and, for bridge services, injects that network as `external` before `docker compose up`. Engine 27.x reports the new IPv6 gateway as CIDR (`fdxx::1/64`) until the daemon restarts ([moby#49520](https://github.com/moby/moby/pull/49520)), and Compose exits with `ParseAddr`.
-- Host mode makes Coolify **skip** that inject, so Compose never inspects the broken gateway.
-- The earlier HTTP 503 "no available server" was host mode **plus** a `127.0.0.1` dashboard bind. Traefik reaches the Docker host IP; nothing was listening there. `0.0.0.0:9119` is reachable.
+- `ports:` together with host mode is invalid Compose. Coolify's generator then drops host mode, injects the UUID network, and `docker compose up` dies with `ParseAddr("fdxx::1/64")`.
+- Host mode without `ports:` is the skip path: Coolify does not inject that network.
+- The earlier HTTP 503 was host mode **plus** a `127.0.0.1` dashboard bind. Traefik reaches the Docker host IP; `0.0.0.0:9119` is listening.
 
-Do **not** add a `networks:` block. On Docker Engine **28.0.1+** you can switch back to bridge + `expose`/`ports` 9119 and drop `network_mode: host` so Traefik shares Coolify's UUID network.
+Set the Coolify domain to **`https://3.ai.vazler.cz:9119`** (the `:9119` is the backend port Traefik should use; it is not the public HTTPS port).
 
-If you prefer bridge mode on 27.x, fix the daemon on the **Coolify host** (SSH, or **Servers → Terminal**) then redeploy:
+If ParseAddr still appears, Coolify is inspecting an already-created IPv6 network. In the application: **Configuration → General → Custom Start Command**:
 
 ```sh
-sudo systemctl restart docker
+bash scripts/coolify-compose-up.sh
 ```
 
-Or run `scripts/fix_docker_ipv6_cidr_gateway.sh` as root on the host. To stop the CIDR from coming back on every *new* network, upgrade Docker to 28.0.1+ or set `"ipv6": false` in `/etc/docker/daemon.json` ([coolify#8649](https://github.com/coollabsio/coolify/issues/8649)).
+That rewrites CIDR IPv6 gateways to IPv4-only over the Docker HTTP API (curl, not the Go client), then runs `docker compose up -d`. Enable **Raw Compose Deployment** as well so Coolify does not re-add the UUID network.
 
-Do not add `extra_hosts: ["host.docker.internal:host-gateway"]` — `host-gateway` resolution hits the same ParseAddr path.
+On Docker Engine **28.0.1+** you can switch back to bridge + `expose`/`ports` 9119. To stop CIDR gateways on 27.x, upgrade Docker or set `"ipv6": false` in `/etc/docker/daemon.json` ([coolify#8649](https://github.com/coollabsio/coolify/issues/8649)).
+
+Do not add `extra_hosts: ["host.docker.internal:host-gateway"]`.
 
 ## Optional: Linux desktop audio bridge
 

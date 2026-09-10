@@ -10,19 +10,19 @@
 # values via usermod/groupmod; each supervised service then drops to that
 # user via `s6-setuidgid`.
 #
-# Reverse proxies (Coolify / Traefik / Caddy) on Docker Engine 28+:
-# prefer bridge + expose/ports 9119 so Traefik shares Coolify's UUID
-# network. This file uses host networking instead because Engine 27.x
-# reports that UUID network's IPv6 gateway as CIDR (`fdxx::1/64`) and
-# `docker compose up` fails with ParseAddr (moby#49520 / coolify#8649).
-# Coolify skips injecting the UUID network when network_mode is host.
-#
-# Bind the dashboard to 0.0.0.0 (not 127.0.0.1). Host mode + loopback
-# was the HTTP 503 "no available server": Traefik hits the Docker host
-# IP:9119 and nothing was listening there. 0.0.0.0:9119 is reachable.
-# A public bind still requires auth (fails closed otherwise) — set
-# HERMES_DASHBOARD_BASIC_AUTH_USERNAME + _PASSWORD + _SECRET (or Nous
-# OAuth) and HERMES_DASHBOARD_PUBLIC_URL (e.g. https://ai.vazler.cz).
+# Coolify + Docker Engine 27.x ParseAddr("fdxx::1/64"):
+# 1. This service uses network_mode: host (no `ports:` / `networks:`)
+#    so Coolify does not inject its UUID network into compose.
+#    `ports:` + host made Coolify drop host mode and re-inject that
+#    network, which is why ParseAddr survived the previous revision.
+# 2. Bind the dashboard at 0.0.0.0:9119 (not 127.0.0.1) so Traefik can
+#    reach the Docker host IP. Loopback bind was HTTP 503.
+# 3. If ParseAddr still happens, Coolify is inspecting an already-created
+#    IPv6 UUID network. In Coolify set Custom Start Command to:
+#      bash scripts/coolify-compose-up.sh
+#    That recreates CIDR-gateway networks as IPv4-only via the Docker
+#    HTTP API (curl), then compose up. Domain must include the port:
+#      https://3.ai.vazler.cz:9119
 #
 # Security notes:
 #   - The dashboard stores API keys. A public bind always requires auth;
@@ -44,13 +44,8 @@ services:
     image: hermes-agent
     restart: unless-stopped
     network_mode: host
-    expose:
-      - "9119"
-    # Coolify reads `ports` to learn Traefik's backend port. Docker
-    # ignores the mapping when network_mode is host; 9119 is already
-    # on the host via HERMES_DASHBOARD_HOST=0.0.0.0.
-    ports:
-      - "9119:9119"
+    labels:
+      - traefik.http.services.gateway.loadbalancer.server.port=9119
     volumes:
       - ${HERMES_DATA:-~/.hermes}:/opt/data
     environment:
