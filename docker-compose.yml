@@ -10,14 +10,19 @@
 # values via usermod/groupmod; each supervised service then drops to that
 # user via `s6-setuidgid`.
 #
-# Reverse proxies (Coolify / Traefik / Caddy): do NOT use host networking.
-# Host mode takes the container off the proxy Docker network, which surfaces
-# as HTTP 503 "no available server". Coolify should expose port 9119 and
-# attach the FQDN to this `gateway` service. A non-loopback dashboard bind
-# requires an auth provider or the dashboard fails closed at startup — set
-# HERMES_DASHBOARD_BASIC_AUTH_USERNAME + _PASSWORD + _SECRET (or Nous OAuth)
-# in the platform env, and HERMES_DASHBOARD_PUBLIC_URL to the public HTTPS
-# origin (e.g. https://ai.vazler.cz).
+# Reverse proxies (Coolify / Traefik / Caddy) on Docker Engine 28+:
+# prefer bridge + expose/ports 9119 so Traefik shares Coolify's UUID
+# network. This file uses host networking instead because Engine 27.x
+# reports that UUID network's IPv6 gateway as CIDR (`fdxx::1/64`) and
+# `docker compose up` fails with ParseAddr (moby#49520 / coolify#8649).
+# Coolify skips injecting the UUID network when network_mode is host.
+#
+# Bind the dashboard to 0.0.0.0 (not 127.0.0.1). Host mode + loopback
+# was the HTTP 503 "no available server": Traefik hits the Docker host
+# IP:9119 and nothing was listening there. 0.0.0.0:9119 is reachable.
+# A public bind still requires auth (fails closed otherwise) — set
+# HERMES_DASHBOARD_BASIC_AUTH_USERNAME + _PASSWORD + _SECRET (or Nous
+# OAuth) and HERMES_DASHBOARD_PUBLIC_URL (e.g. https://ai.vazler.cz).
 #
 # Security notes:
 #   - The dashboard stores API keys. A public bind always requires auth;
@@ -33,25 +38,17 @@
 #     and API_SERVER_HOST. See docs/user-guide/api-server.md before doing
 #     this on an internet-facing host.
 #
-# Coolify: do not add a `networks:` block. Coolify creates an isolated
-# bridge named after the resource UUID and attaches Traefik to it. A
-# second project network makes Traefik pick the wrong container IP
-# (504 / "no available server"). Do not use network_mode: host either.
-#
-# If `docker compose up` fails with
-#   ParseAddr("fdxx::1/64"): unexpected character, want colon
-# that CIDR is Coolify's UUID network gateway, not this file. Docker
-# Engine 27.x reports a new IPv6 gateway as CIDR until the daemon
-# restarts (moby#49520). Fix it on the Coolify HOST — see
-# scripts/fix_docker_ipv6_cidr_gateway.sh and docker.md "Coolify / Traefik".
-#
 services:
   gateway:
     build: .
     image: hermes-agent
     restart: unless-stopped
+    network_mode: host
     expose:
       - "9119"
+    # Coolify reads `ports` to learn Traefik's backend port. Docker
+    # ignores the mapping when network_mode is host; 9119 is already
+    # on the host via HERMES_DASHBOARD_HOST=0.0.0.0.
     ports:
       - "9119:9119"
     volumes:
@@ -60,8 +57,8 @@ services:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}
       # Supervised dashboard in this same container (official image path).
-      # A separate dashboard container needs host/PID namespace sharing;
-      # that is incompatible with Coolify's reverse proxy.
+      # 0.0.0.0 is required with host networking so Traefik can reach
+      # the Docker host IP:9119 (127.0.0.1 produced HTTP 503).
       - HERMES_DASHBOARD=1
       - HERMES_DASHBOARD_HOST=0.0.0.0
       - HERMES_DASHBOARD_PORT=9119

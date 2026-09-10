@@ -159,7 +159,7 @@ If no provider is registered and the bind is non-loopback, the dashboard **fails
 An unauthenticated public dashboard was the entry point for the June 2026 MCP-config persistence campaign: internet scanners reached exposed dashboards (and OpenAI API servers) and drove the agent into planting an SSH-key backdoor. The auth gate is now mandatory on every non-loopback bind. For a trusted-LAN / homelab box, the bundled username/password provider (`HERMES_DASHBOARD_BASIC_AUTH_USERNAME` + `_PASSWORD`) is the zero-infra way to satisfy it.
 :::
 
-The official `docker-compose.yml` runs the dashboard as a supervised side-process in the **same** `gateway` container (`HERMES_DASHBOARD=1`) on a bridge network, so reverse proxies such as Coolify / Traefik can reach port 9119. A separate dashboard container is only supported when it shares the host PID and network namespace with the gateway (`network_mode: host`); gateway-liveness detection needs that shared PID namespace, so an isolated bridge-network dashboard sidecar will not work.
+The official `docker-compose.yml` runs the dashboard as a supervised side-process in the **same** `gateway` container (`HERMES_DASHBOARD=1`). On Coolify hosts still on Docker Engine 27.x it uses `network_mode: host` and binds `0.0.0.0:9119` so Traefik can reach the host port without Compose inspecting Coolify's IPv6 UUID network. A separate dashboard container is only supported when it shares the host PID and network namespace with the gateway.
 
 ## Running interactively (CLI chat)
 
@@ -383,32 +383,23 @@ Start with `docker compose up -d` and view logs with `docker compose logs -f`. T
 
 ### Coolify / Traefik
 
-Use the repo `docker-compose.yml` as-is: bridge networking and `expose`/`ports` for 9119. Do **not** add a `networks:` block — Coolify creates an isolated bridge named after the resource UUID and attaches Traefik to it; a second project network makes Traefik pick the wrong container IP. Do **not** switch the service to `network_mode: host` — that takes the container off Coolify's proxy network and Traefik returns HTTP 503 "no available server".
+This repo's `docker-compose.yml` uses **`network_mode: host`** and binds the dashboard to **`0.0.0.0:9119`**. That is required on Docker Engine 27.x Coolify hosts:
 
-If deploy fails with:
+- Coolify always runs `docker network create --attachable <uuid>` and, for bridge services, injects that network as `external` before `docker compose up`. Engine 27.x reports the new IPv6 gateway as CIDR (`fdxx::1/64`) until the daemon restarts ([moby#49520](https://github.com/moby/moby/pull/49520)), and Compose exits with `ParseAddr`.
+- Host mode makes Coolify **skip** that inject, so Compose never inspects the broken gateway.
+- The earlier HTTP 503 "no available server" was host mode **plus** a `127.0.0.1` dashboard bind. Traefik reaches the Docker host IP; nothing was listening there. `0.0.0.0:9119` is reachable.
 
-```text
-ParseAddr("fde4:...::1/64"): unexpected character, want colon (at "/64")
-```
+Do **not** add a `networks:` block. On Docker Engine **28.0.1+** you can switch back to bridge + `expose`/`ports` 9119 and drop `network_mode: host` so Traefik shares Coolify's UUID network.
 
-that string is the IPv6 gateway of Coolify's UUID network, not an address in this repository. Coolify runs `docker network create --attachable <uuid>` before `docker compose up`. Docker Engine 27.x then reports the new IPv6 gateway as CIDR until the daemon restarts ([moby#49520](https://github.com/moby/moby/pull/49520)). Compose inspects that network and exits. A compose-file change cannot stop Coolify from injecting the already-created network.
-
-Fix it on the **Coolify host** (SSH, or **Servers → Terminal**), then redeploy:
+If you prefer bridge mode on 27.x, fix the daemon on the **Coolify host** (SSH, or **Servers → Terminal**) then redeploy:
 
 ```sh
-# 1. Fastest: rewrite in-memory IPAM so the gateway is fdxx::1, not fdxx::1/64
 sudo systemctl restart docker
 ```
 
-Or copy `scripts/fix_docker_ipv6_cidr_gateway.sh` to the host and run it as root.
+Or run `scripts/fix_docker_ipv6_cidr_gateway.sh` as root on the host. To stop the CIDR from coming back on every *new* network, upgrade Docker to 28.0.1+ or set `"ipv6": false` in `/etc/docker/daemon.json` ([coolify#8649](https://github.com/coollabsio/coolify/issues/8649)).
 
-If the next *new* network (a PR preview, a new resource) fails the same way, make it permanent:
-
-1. Upgrade Docker Engine to **28.0.1 or newer** (`apt-get install docker-ce --only-upgrade`), **or**
-2. Set `"ipv6": false` in `/etc/docker/daemon.json`, restart Docker, and recreate the resource network (see [coollabsio/coolify#8649](https://github.com/coollabsio/coolify/issues/8649)).
-3. Clear **Settings → General → Instance's Public IPv6** if Coolify filled it with a CIDR.
-
-Do not add `extra_hosts: ["host.docker.internal:host-gateway"]` to work around this — `host-gateway` resolution hits the same ParseAddr path.
+Do not add `extra_hosts: ["host.docker.internal:host-gateway"]` — `host-gateway` resolution hits the same ParseAddr path.
 
 ## Optional: Linux desktop audio bridge
 
