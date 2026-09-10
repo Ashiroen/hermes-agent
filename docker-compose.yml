@@ -83,3 +83,23 @@ services:
       # - GOOGLE_CHAT_SERVICE_ACCOUNT_JSON=${GOOGLE_CHAT_SERVICE_ACCOUNT_JSON}
       # - GOOGLE_CHAT_ALLOWED_USERS=${GOOGLE_CHAT_ALLOWED_USERS}
     command: ["gateway", "run"]
+  # Tailscale sidecar (userspace). Shares the host netns with the gateway
+  # so its SOCKS5 proxy (localhost:1055) is reachable from the gateway.
+  # Registers as its own device on the tailnet; state persists in a volume.
+  ts:
+    image: tailscale/tailscale:latest
+    container_name: hermes-ts
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - hermes-ts-state:/var/lib/tailscale
+    environment:
+      - TS_HOSTNAME=hermes-gateway
+      - TS_USERSPACE=true
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_SOCKS5_SERVER=localhost:1055
+
+volumes:
+  hermes-ts-state:
+
